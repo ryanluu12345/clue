@@ -2,8 +2,10 @@ package metrics
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -32,7 +34,7 @@ type HTTPEndpointDetails struct {
 // This is used to figure out which specific metric combination to initialize.
 type InitMetricDetails struct {
 	// EndpointDetails are the HTTP details for each Path + Verb combo.
-	EndpointDetails []HTTPEndpointDetails
+	EndpointDetails []*HTTPEndpointDetails
 	// Host is the host of the actual running server.
 	Host string
 	// StatusCodes are the set of status codes that are possible for the endpoints (i.e. 400, 500, 200)
@@ -63,6 +65,34 @@ func initMetrics(metrics *httpMetrics, initDetails *InitMetricDetails) {
 	}
 }
 
+var wildSeg = regexp.MustCompile(`/{([a-zA-Z0-9_]+)}`)
+
+// replaceWithPattern replaces the path pattern interpolation string with
+// the associated regexp wildcard so that we can easily do string matches
+// on incoming paths.
+func replacePathWithPattern(path string) string {
+	return wildSeg.ReplaceAllString(path, "/[a-zA-Z0-9-_]+")
+}
+
+// findMatchingPattern finds the matching pattern string from the endpoint details and returns
+// it. If one cannot be find, it returns an empty string.
+func findMatchingPattern(path string, dtls []*HTTPEndpointDetails) (string, error) {
+	for _, dtl := range dtls {
+		// Make sure that things strictly start and end with this string.
+		cleanedRegexPath := fmt.Sprintf("^%s$", dtl.Path)
+		regex, err := regexp.Compile(cleanedRegexPath)
+		if err != nil {
+			return "", err
+		}
+
+		if regex.MatchString(path) {
+			return dtl.Path, nil
+		}
+	}
+
+	return "", nil
+}
+
 // HTTP returns a middlware that metricss requests. The context must have
 // been initialized with Context. HTTP collects the following metrics:
 //
@@ -87,6 +117,12 @@ func HTTP(ctx context.Context, initDetails *InitMetricDetails) func(http.Handler
 	}
 	metrics := b.(*stateBag).HTTPMetrics()
 	resolver := b.(*stateBag).options.resolver
+
+	// Replace all paths with the relevant path pattern regexp string.
+	for _, path := range initDetails.EndpointDetails {
+		path.Path = replacePathWithPattern(path.Path)
+	}
+
 	initMetrics(metrics, initDetails)
 
 	return func(h http.Handler) http.Handler {
@@ -114,6 +150,10 @@ func HTTP(ctx context.Context, initDetails *InitMetricDetails) func(http.Handler
 			h.ServeHTTP(rw, req)
 
 			labels[labelHTTPStatusCode] = strconv.Itoa(rw.StatusCode)
+			// Swallow the errors since we have default behavior anyways.
+			if pattern, _ := findMatchingPattern(route, initDetails.EndpointDetails); pattern != "" {
+				labels[labelHTTPPath] = pattern
+			}
 
 			reqLength := req.Context().Value(ctxReqLen).(*int)
 			metrics.Durations.With(labels).Observe(float64(timeSince(now).Milliseconds()))
