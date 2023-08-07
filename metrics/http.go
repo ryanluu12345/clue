@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -145,6 +146,7 @@ func HTTP(ctx context.Context, initDetails *InitMetricDetails) func(http.Handler
 			req = req.WithContext(ctx)
 
 			h.ServeHTTP(rw, req)
+			labels[labelHTTPStatusCode] = strconv.Itoa(rw.StatusCode)
 
 			// Swallow the errors since we have default behavior anyways.
 			if pattern, _ := findMatchingPattern(route, initDetails.EndpointDetails); pattern != "" {
@@ -153,7 +155,6 @@ func HTTP(ctx context.Context, initDetails *InitMetricDetails) func(http.Handler
 			}
 
 			/*
-				labels[labelHTTPStatusCode] = strconv.Itoa(rw.StatusCode)
 				val := ctx.Value(goa.PathPatternKey)
 				fmt.Println(val)
 				if val != nil {
